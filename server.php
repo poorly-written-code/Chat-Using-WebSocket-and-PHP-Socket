@@ -1,150 +1,128 @@
 <?php
-$host = 'localhost'; //host
-$port = '9000'; //port
-$null = NULL; //null var
+	$null = NULL;
 
-//Create TCP/IP sream socket
-$socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-//reuseable port
-socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
-
-//bind socket to specified host
-socket_bind($socket, 0, $port);
-
-//listen to port
-socket_listen($socket);
-
-//create & add listning socket to the list
-$clients = array($socket);
-
-//start endless loop, so that our script doesn't stop
-while (true) {
-	//manage multipal connections
-	$changed = $clients;
-	//returns the socket resources in $changed array
-	socket_select($changed, $null, $null, 0, 10);
+	class websocketPHP {
+		private $socket_list;
+		private $socket;
 	
-	//check for new socket
-	if (in_array($socket, $changed)) {
-		$socket_new = socket_accept($socket); //accpet new socket
-		$clients[] = $socket_new; //add socket to client array
-		
-		$header = socket_read($socket_new, 1024); //read data sent by the socket
-		perform_handshaking($header, $socket_new, $host, $port); //perform websocket handshake
-		
-		socket_getpeername($socket_new, $ip); //get ip address of connected socket
-		$response = mask(json_encode(array('type'=>'system', 'message'=>$ip.' connected'))); //prepare json data
-		send_message($response); //notify all users about new connection
-		
-		//make room for new socket
-		$found_socket = array_search($socket, $changed);
-		unset($changed[$found_socket]);
-	}
+		function __construct($address, $port) {
+			$this->socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);   //create a php socket
+			socket_set_option($this->socket, SOL_SOCKET, SO_REUSEADDR, 1);  //let the socket be reusable
+			socket_set_nonblock($this->socket);                             //dont block if there are no new socket_accept()
+			socket_bind($this->socket, $address, $port);                    //where to listen
+			socket_listen($this->socket);                                   //start listening
+			$this->socket_list = [$this->socket];
+			echo "websocketPHP open on $address:$port\r\n\r\n";
 	
-	//loop through all connected sockets
-	foreach ($changed as $changed_socket) {	
-		
-		//check for any incomming data
-		while(socket_recv($changed_socket, $buf, 1024, 0) >= 1)
-		{
-			$received_text = unmask($buf); //unmask data
-			$tst_msg = json_decode($received_text, true); //json decode 
-			$user_name = $tst_msg['name']; //sender name
-			$user_message = $tst_msg['message']; //message text
-			$user_color = $tst_msg['color']; //color
-			
-			//prepare data to be sent to client
-			$response_text = mask(json_encode(array('type'=>'usermsg', 'name'=>$user_name, 'message'=>$user_message, 'color'=>$user_color)));
-			send_message($response_text); //send data
-			break 2; //exist this loop
+			while(true) { //listen forever. or until a typo fatally crashes everything.
+
+				//this is the bit that still needs a bit of refactoring:
+				//manage multipal connections
+				$changed = $clients;
+				//returns the socket resources in $changed array
+				socket_select($changed, $null, $null, 0, 10);
+				
+				//check for new socket
+				if (in_array($socket, $changed)) {
+					$socket_new = socket_accept($socket); //accpet new socket
+					$clients[] = $socket_new; //add socket to client array
+					
+					$header = socket_read($socket_new, 1024); //read data sent by the socket
+					perform_handshaking($header, $socket_new, $host, $port); //perform websocket handshake
+					
+					socket_getpeername($socket_new, $ip); //get ip address of connected socket
+					$response = mask(json_encode(array('type'=>'system', 'message'=>$ip.' connected'))); //prepare json data
+					send_message($response); //notify all users about new connection
+					
+					//make room for new socket
+					$found_socket = array_search($socket, $changed);
+					unset($changed[$found_socket]);
+				}
+				
+				//loop through all connected sockets
+				foreach ($changed as $changed_socket) {	
+					
+					//check for any incomming data
+					while(socket_recv($changed_socket, $buf, 1024, 0) >= 1)
+					{
+						$received_text = unmask($buf); //unmask data
+						$tst_msg = json_decode($received_text, true); //json decode 
+						$user_name = $tst_msg['name']; //sender name
+						$user_message = $tst_msg['message']; //message text
+						$user_color = $tst_msg['color']; //color
+						
+						//prepare data to be sent to client
+						$response_text = mask(json_encode(array('type'=>'usermsg', 'name'=>$user_name, 'message'=>$user_message, 'color'=>$user_color)));
+						send_message($response_text); //send data
+						break 2; //exist this loop
+					}
+					
+					$buf = @socket_read($changed_socket, 1024, PHP_NORMAL_READ);
+					if ($buf === false) { // check disconnected client
+						// remove client for $clients array
+						$found_socket = array_search($changed_socket, $clients);
+						socket_getpeername($changed_socket, $ip);
+						unset($clients[$found_socket]);
+						
+						//notify all users about disconnected connection
+						$response = mask(json_encode(array('type'=>'system', 'message'=>$ip.' disconnected')));
+						send_message($response);
+					}
+				}
+
+									 
+			}
 		}
-		
-		$buf = @socket_read($changed_socket, 1024, PHP_NORMAL_READ);
-		if ($buf === false) { // check disconnected client
-			// remove client for $clients array
-			$found_socket = array_search($changed_socket, $clients);
-			socket_getpeername($changed_socket, $ip);
-			unset($clients[$found_socket]);
-			
-			//notify all users about disconnected connection
-			$response = mask(json_encode(array('type'=>'system', 'message'=>$ip.' disconnected')));
-			send_message($response);
-		}
-	}
-}
-// close the listening socket
-socket_close($socket);
+//add new socket to socket list
+	function add($socket) {
+		socket_accept($socket);
+		preg_match('#Sec-WebSocket-Key: (.*)\r\n#', socket_read($socket, 1024), $matches);
+		if (count($matches) > 0) {
+			$this->send("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" .
+				"Sec-WebSocket-Accept: ".base64_encode(pack("H*",sha1($matches[1]."258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))."\r\n\r\n", [$socket]);
 
-function send_message($msg)
-{
-	global $clients;
-	foreach($clients as $changed_socket)
-	{
-		@socket_write($changed_socket,$msg,strlen($msg));
-	}
-	return true;
-}
-
-
-//Unmask incoming framed message
-function unmask($text) {
-	$length = ord($text[1]) & 127;
-	if($length == 126) {
-		$masks = substr($text, 4, 4);
-		$data = substr($text, 8);
-	}
-	elseif($length == 127) {
-		$masks = substr($text, 10, 4);
-		$data = substr($text, 14);
-	}
-	else {
-		$masks = substr($text, 2, 4);
-		$data = substr($text, 6);
-	}
-	$text = "";
-	for ($i = 0; $i < strlen($data); ++$i) {
-		$text .= $data[$i] ^ $masks[$i%4];
-	}
-	return $text;
-}
-
-//Encode message for transfer to client.
-function mask($text)
-{
-	$b1 = 0x80 | (0x1 & 0x0f);
-	$length = strlen($text);
-	
-	if($length <= 125)
-		$header = pack('CC', $b1, $length);
-	elseif($length > 125 && $length < 65536)
-		$header = pack('CCn', $b1, 126, $length);
-	elseif($length >= 65536)
-		$header = pack('CCNN', $b1, 127, $length);
-	return $header.$text;
-}
-
-//handshake new client.
-function perform_handshaking($receved_header,$client_conn, $host, $port)
-{
-	$headers = array();
-	$lines = preg_split("/\r\n/", $receved_header);
-	foreach($lines as $line)
-	{
-		$line = chop($line);
-		if(preg_match('/\A(\S+): (.*)\z/', $line, $matches))
-		{
-			$headers[$matches[1]] = $matches[2];
+			socket_getpeername($socket, $ip);
+			$socket->ip = $ip;
+			$socket->uid = uniqid();
+			$this->socket_list []= $socket;
+			$this->send(["action"=>"connected", "ip"=>$ip], [$socket]);
 		}
 	}
+//decode data recieved
+	function decode($data) {
+		$l = ord($data[1]) & 127;
 
-	$secKey = $headers['Sec-WebSocket-Key'];
-	$secAccept = base64_encode(pack('H*', sha1($secKey . '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')));
-	//hand shaking header
-	$upgrade  = "HTTP/1.1 101 Web Socket Protocol Handshake\r\n" .
-	"Upgrade: websocket\r\n" .
-	"Connection: Upgrade\r\n" .
-	"WebSocket-Origin: $host\r\n" .
-	"WebSocket-Location: ws://$host:$port/demo/shout.php\r\n".
-	"Sec-WebSocket-Accept:$secAccept\r\n\r\n";
-	socket_write($client_conn,$upgrade,strlen($upgrade));
-}
+		switch (true) {
+			case $l == 126: $h = [4, 4]; break;
+			case $l == 127: $h = [10, 4]; break;
+			default: $h = [2, 4]; break;
+		}
+
+		$d = substr($data, $h[0] + $h[1]);
+		$m = substr($data, $h[0], $h[1]);
+
+		return implode("", array_map(fn($i) => $d[$i] ^ $m[$i % 4], range(0, strlen($data) - 7)));
+	}
+//encode data to be sent
+	function encode($data) {
+		$b = 0x80 | (0x1 & 0x0f);
+		$c = gettype($data) === 'string' ? $data : json_encode($data); //connection upgrade / json = string, socket request = object
+		$l = strlen($c);
+
+		switch (true) {
+			case $l <= 125: $h = pack("CC", $b, $l); break;
+			case $l >= 65536: $h = pack("CCNN", $b, 127, $l); break;
+			default: $h = pack("CCn", $b, 126, $l); break;
+		}
+
+		return $h.$c;
+	}
+//sends message. $socket_list can be an array of one or more sockets, or empty to broadcast to all connected sockets
+    function send($data, $socket_list = null) {
+      foreach($socket_list ?? $this->socket_list as $socket) {
+        socket_write($socket, $this->encode($data));
+      }
+    }
+	}
+
+	new websocketPHP('192.168.0.102', '12345');
