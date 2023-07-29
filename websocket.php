@@ -125,4 +125,4 @@
     }
 	}
 
-	new websocketPHP('192.168.0.102', '12345');
+	new websocketPHP($argv[1], $argv[2]);
